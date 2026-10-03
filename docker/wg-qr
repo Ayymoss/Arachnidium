@@ -1,0 +1,19 @@
+#!/usr/bin/env python
+"""
+  Prints the WireGuard client config as a QR code, as a stand-in for the
+  "Show WireGuard QR Code" button in the GUI.
+
+  Usage: docker compose exec arachnidium wg-qr
+"""
+
+import sys
+import qrcode
+
+with open("/data/wireguard.cfg", "r") as config_file:
+  config = config_file.read()
+
+print(config)
+if sys.stdout.isatty():
+  qr = qrcode.QRCode()
+  qr.add_data(config)
+  qr.print_tty()
