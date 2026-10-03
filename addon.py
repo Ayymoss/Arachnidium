@@ -25,6 +25,7 @@ with open("defaults.json", "r") as defaults_json:
   ENABLE_GUI = defaults["ENABLE_GUI"]
   FORCE_MAX_COMPRESSION = defaults["FORCE_MAX_COMPRESSION"]
   IMAGE_QUALITY = defaults["IMAGE_QUALITY"]
+  USE_AVIF = defaults["USE_AVIF"]
   USE_SPECULATIVE_CACHE = defaults["USE_SPECULATIVE_CACHE"]
   SPECULATIVE_CACHE_MAX_ENTRIES = defaults["SPECULATIVE_CACHE_MAX_ENTRIES"]
   CLEAR_HTTP_ERRORS = defaults["CLEAR_HTTP_ERRORS"]
@@ -49,6 +50,7 @@ def start_gui():
 
   tk_IMAGE_QUALITY = tk.IntVar(value=IMAGE_QUALITY)
   tk_FORCE_MAX_COMPRESSION = tk.BooleanVar(value=FORCE_MAX_COMPRESSION)
+  tk_USE_AVIF = tk.BooleanVar(value=USE_AVIF)
   tk_USE_SPECULATIVE_CACHE = tk.BooleanVar(value=USE_SPECULATIVE_CACHE)
   tk_CLEAR_HTTP_ERRORS = tk.BooleanVar(value=CLEAR_HTTP_ERRORS)
   tk_BLOCK_ADS = tk.BooleanVar(value=BLOCK_ADS)
@@ -58,9 +60,10 @@ def start_gui():
   image_quality_label.pack()
 
   def update_settings(_=0):
-    global IMAGE_QUALITY, FORCE_MAX_COMPRESSION, USE_SPECULATIVE_CACHE, CLEAR_HTTP_ERRORS, BLOCK_ADS, ENABLE_DEBUG
+    global IMAGE_QUALITY, FORCE_MAX_COMPRESSION, USE_AVIF, USE_SPECULATIVE_CACHE, CLEAR_HTTP_ERRORS, BLOCK_ADS, ENABLE_DEBUG
     IMAGE_QUALITY=tk_IMAGE_QUALITY.get()
     FORCE_MAX_COMPRESSION=tk_FORCE_MAX_COMPRESSION.get()
+    USE_AVIF=tk_USE_AVIF.get()
     USE_SPECULATIVE_CACHE=tk_USE_SPECULATIVE_CACHE.get()
     CLEAR_HTTP_ERRORS=tk_CLEAR_HTTP_ERRORS.get()
     BLOCK_ADS=tk_BLOCK_ADS.get()
@@ -69,6 +72,7 @@ def start_gui():
 
   ttk.Scale(frame_root, from_=0, to=100, orient="horizontal", variable=tk_IMAGE_QUALITY, command=update_settings).pack()
   ttk.Checkbutton(frame_root, text="Force Max Compression", variable=tk_FORCE_MAX_COMPRESSION, command=update_settings).pack()
+  ttk.Checkbutton(frame_root, text="Use AVIF Images", variable=tk_USE_AVIF, command=update_settings).pack()
   ttk.Checkbutton(frame_root, text="Speculative Caching", variable=tk_USE_SPECULATIVE_CACHE, command=update_settings).pack()
   ttk.Checkbutton(frame_root, text="Clear HTTP Error Body", variable=tk_CLEAR_HTTP_ERRORS, command=update_settings).pack()
   ttk.Checkbutton(frame_root, text="Block Ads", variable=tk_BLOCK_ADS, command=update_settings).pack()
@@ -157,6 +161,22 @@ def convert_webp(data: bytes) -> bytes:
     quality=IMAGE_QUALITY,
     alpha_quality=IMAGE_QUALITY,
     method=6,
+    save_all=True
+  )
+  return output.getvalue()
+
+def convert_avif(data: bytes) -> bytes:
+  image = Image.open(io.BytesIO(data))
+  output = io.BytesIO()
+  image.save(
+    output,
+    format="AVIF",
+    # AVIF needs a higher quality value than WebP for similar visual quality,
+    # so map IMAGE_QUALITY onto a roughly equivalent AVIF quality (by SSIM).
+    quality=round(24 + 0.6 * IMAGE_QUALITY),
+    # Speed 8 is usually faster than WebP's method 6 and still produces smaller
+    # files. Lower speeds compress a bit better, but are much slower.
+    speed=8,
     save_all=True
   )
   return output.getvalue()
@@ -258,10 +278,22 @@ def response(flow: mitmproxy.http.HTTPFlow) -> None:
       content_type.startswith("image/webp") or
       content_type.startswith("image/gif")  or
       content_type.startswith("image/vnd.microsoft.icon")):
-    flow.response.raw_content = convert_webp(flow.response.content)
+    # Prefer AVIF when the client advertises support for it. Lossless output
+    # (quality 100) stays WebP, as does anything AVIF fails to encode.
+    output = None
+    accept = flow.request.headers.get("accept") or ""
+    if USE_AVIF and IMAGE_QUALITY < 100 and "image/avif" in accept:
+      try:
+        output = convert_avif(flow.response.content)
+        flow.response.headers["content-type"] = "image/avif"
+      except Exception as e:
+        if ENABLE_DEBUG: print("AVIF conversion failed, using WebP:", e)
+    if output is None:
+      output = convert_webp(flow.response.content)
+      flow.response.headers["content-type"] = "image/webp"
+    flow.response.raw_content = output
     if "content-encoding" in flow.response.headers:
       del flow.response.headers["content-encoding"]
-    flow.response.headers["content-type"] = "image/webp"
     flow.response.headers["content-length"] = str(len(flow.response.raw_content))
     return count_savings(size_before, len(flow.response.raw_content))
 
