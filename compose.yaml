@@ -1,0 +1,18 @@
+services:
+  arachnidium:
+    image: ghcr.io/p2r3/arachnidium:latest
+    build: .
+    restart: unless-stopped
+    # Reaps the Bun API process that Arachnidium starts.
+    init: true
+    # Any setting from defaults.json can be overridden here, e.g.:
+    # environment:
+    #   IMAGE_QUALITY: 40
+    #   BLOCK_ADS: false
+    ports:
+      - "51820:51820/udp"
+    volumes:
+      - data:/data
+
+volumes:
+  data:
